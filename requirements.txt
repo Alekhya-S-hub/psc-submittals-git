@@ -1,0 +1,40 @@
+# Web Framework
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+
+# PDF Processing - PyMuPDF (pre-built wheels available)
+PyMuPDF>=1.24.0
+
+# OCR Support (optional - only if processing scanned PDFs)
+pytesseract>=0.3.10
+Pillow>=10.2.0
+
+# Excel/Data Processing
+openpyxl>=3.1.2
+pandas>=2.1.0
+xlsxwriter>=3.1.0
+
+# Azure Integration (commented out for initial setup)
+# azure-storage-blob>=12.19.0
+# azure-identity>=1.15.0
+# msal>=1.25.0
+
+# Environment & Configuration
+python-dotenv>=1.0.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# HTTP & Networking
+httpx>=0.25.0
+requests>=2.31.0
+
+# Utilities
+python-dateutil>=2.8.0
+pytz>=2023.3
+
+# Development & Testing (optional, comment out for production)
+# pytest>=7.4.3
+# pytest-asyncio>=0.21.1
+# black>=23.12.0
+# flake8>=6.1.0
