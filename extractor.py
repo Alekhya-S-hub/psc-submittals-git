@@ -109,15 +109,15 @@ class SubmittalExtractor:
 
         self.hierarchy_patterns = [
             re.compile(r'^PART\s+\d+\s*[-–—]?\s*(.*)$', re.IGNORECASE),  # Level 1: PART 1
-            re.compile(r'^(\d+\.\d+)\s*[-–]?\s*(.+?)$'),  # Level 2: 1.01, 1.3, 1.3 - TEXT
-            re.compile(r'^([A-Z])\.\s*(.+?)$'),  # Level 3: A., A.Text (requires dot)
-            re.compile(r'^(\d{1,2})\.\s+(.+?)$'),  # Level 4: 1., 2., ..., 99. (1-2 digits only)
-            re.compile(r'^([a-z])\.\s+(.+?)$'),  # Level 5: a., b. (requires dot + space)
-            re.compile(r'^(\d+)\)\s+(.+?)$'),  # Level 6: 1), 2)
-            re.compile(r'^([a-z])\)\s+(.+?)$'),  # Level 7: a), b)
-            re.compile(r'^\(([a-z])\)\s+(.+?)$'),  # Level 8: (a), (b)
-            re.compile(r'^\((\d+)\)\s+(.+?)$'),  # Level 9: (1), (2)
-            re.compile(r'^([ivxlcdm]+)\.\s+(.+?)$'),  # Level 10: i., ii.
+            re.compile(r'^(\d+\.\d+)\s*[-–]?\s*(.+?)$'),                  # Level 2: 1.01, 1.3, 1.3 - TEXT
+            re.compile(r'^([A-Z])\.\s*(.+?)$'),                           # Level 3: A., A.Text (requires dot)
+            re.compile(r'^(\d{1,2})\.\s+(.+?)$'),                         # Level 4: 1., 2., ..., 99. (1-2 digits only)
+            re.compile(r'^([a-z])\.\s+(.+?)$'),                           # Level 5: a., b. (requires dot + space)
+            re.compile(r'^(\d+)\)\s+(.+?)$'),                             # Level 6: 1), 2)
+            re.compile(r'^([a-z])\)\s+(.+?)$'),                           # Level 7: a), b)
+            re.compile(r'^\(([a-z])\)\s+(.+?)$'),                         # Level 8: (a), (b)
+            re.compile(r'^\((\d+)\)\s+(.+?)$'),                           # Level 9: (1), (2)
+            re.compile(r'^([ivxlcdm]+)\.\s+(.+?)$'),                      # Level 10: i., ii.
         ]
 
     def extract(self, template_path: str = None) -> Dict:
@@ -146,6 +146,12 @@ class SubmittalExtractor:
             logger.info("Parsing Table of Contents from first 100 pages...")
             self.toc = self._extract_toc_from_first_100_pages()
             logger.info(f"Found {len(self.toc)} sections in TOC")
+
+            # Fallback: If no TOC or TOC has no technical specs, scan PDF directly
+            if len(self.toc) == 0:
+                logger.warning("No sections found in TOC. Scanning PDF directly for SECTION headers...")
+                self.toc = self._scan_pdf_for_sections()
+                logger.info(f"Found {len(self.toc)} sections by scanning PDF")
 
             # Process sections
             logger.info("Processing sections...")
@@ -248,7 +254,7 @@ class SubmittalExtractor:
             section_numbers = section_num_pattern.findall(toc_text)
             section_count = len(section_numbers)
 
-            logger.info(f"  TOC #{i + 1} at position {toc_start}: {section_count} section numbers")
+            logger.info(f"  TOC #{i+1} at position {toc_start}: {section_count} section numbers")
 
             if section_count > best_section_count:
                 best_section_count = section_count
@@ -308,6 +314,53 @@ class SubmittalExtractor:
 
         logger.info(f"Found {len(toc_sections)} sections in TOC")
         return toc_sections
+
+    def _scan_pdf_for_sections(self) -> list:
+        """
+        Fallback method: Scan PDF directly for SECTION headers when no TOC available
+        Returns list of (section_num_display, section_num_search, section_name) tuples
+        """
+        logger.info("Scanning full PDF for SECTION headers...")
+        sections = []
+
+        # Pattern to match SECTION headers
+        # Matches: SECTION 01 33 00 or SECTION 013300
+        section_pattern = re.compile(
+            r'(?:^|\n)\s*SECTION\s+((?:\d{2}\s+\d{2}\s+\d{2}|\d{5,6})(?:\.\d+)?)\s*[-–]?\s*(.+?)(?=\n|$)',
+            re.MULTILINE | re.IGNORECASE
+        )
+
+        # Find all section headers in full PDF text
+        matches = section_pattern.finditer(self.full_text)
+
+        for match in matches:
+            section_num_raw = match.group(1).strip()
+            section_name = match.group(2).strip()
+
+            # Clean section name (remove page numbers, etc.)
+            section_name = self._clean_section_name(section_name)
+
+            # Normalize section number
+            if ' ' in section_num_raw:
+                # Format: "01 33 00"
+                section_num_display = section_num_raw
+                section_num_search = section_num_raw.replace(' ', '')
+            else:
+                # Format: "013300"
+                section_num_search = section_num_raw
+                # Convert to display format with spaces: "01 33 00"
+                if len(section_num_search) == 6:
+                    section_num_display = f"{section_num_search[0:2]} {section_num_search[2:4]} {section_num_search[4:6]}"
+                else:
+                    section_num_display = section_num_search
+
+            # Avoid duplicates
+            if not any(sec[0] == section_num_display for sec in sections):
+                sections.append((section_num_display, section_num_search, section_name))
+                logger.debug(f"Found section: {section_num_display} - {section_name}")
+
+        logger.info(f"Scanned PDF and found {len(sections)} sections")
+        return sections
 
     def _clean_section_name(self, name: str) -> str:
         """Clean section name"""
@@ -432,7 +485,7 @@ class SubmittalExtractor:
 
         # Patterns for items that might be on their own line
         subsection_num_pattern = re.compile(r'^(\d+\.\d+)$')  # Just "1.04"
-        single_letter_pattern = re.compile(r'^([A-Z])\.$')  # Just "A."
+        single_letter_pattern = re.compile(r'^([A-Z])\.$')     # Just "A."
         single_lowercase_pattern = re.compile(r'^([a-z])\.$')  # Just "a."
 
         while i < len(lines):
@@ -668,6 +721,8 @@ class SubmittalExtractor:
             first_row[f'Level {i}'] = ''
         rows.append(first_row)
 
+        # NEW APPROACH: Scan entire section and extract ALL submittal subsections
+        # even if they're not consecutive
         in_submittal_subsection = False
         subsection_lines = []
 
@@ -687,66 +742,53 @@ class SubmittalExtractor:
 
                 if in_submittal_subsection:
                     # We were in a submittal subsection
-                    if is_submittal_subsection:
-                        # NEW submittal subsection found!
-                        # Process the previous one first
-                        logger.debug(f"Processing previous submittal subsection in {section_num}")
-                        if subsection_lines:
-                            merged_items = self._merge_continuation_lines(subsection_lines)
-                            for item in merged_items:
-                                row = {
-                                    'Section Number': '',
-                                    'Section Name': '',
-                                }
-                                for i in range(1, 11):
-                                    row[f'Level {i}'] = ''
-                                if item['level'] != 2:
-                                    row[f'Level {item["level"]}'] = item['text']
-                                    rows.append(row)
+                    # Process the previous one before starting new subsection
+                    logger.debug(f"Processing previous submittal subsection in {section_num}")
+                    if subsection_lines:
+                        merged_items = self._merge_continuation_lines(subsection_lines)
+                        for item in merged_items:
+                            row = {
+                                'Section Number': '',
+                                'Section Name': '',
+                            }
+                            for i in range(1, 11):
+                                row[f'Level {i}'] = ''
+                            if item['level'] != 2:
+                                row[f'Level {item["level"]}'] = item['text']
+                                rows.append(row)
 
-                        # Clear lines for the new submittal subsection
-                        subsection_lines = []
+                    # Clear lines for next subsection
+                    subsection_lines = []
 
-                        # Add the new subsection heading
-                        logger.debug(f"Starting new submittal subsection in {section_num}: {line}")
-                        row = {
-                            'Section Number': '',
-                            'Section Name': '',
-                        }
-                        for i in range(1, 11):
-                            row[f'Level {i}'] = ''
-                        row['Level 2'] = line
-                        rows.append(row)
-                        # Stay in submittal subsection mode
-                        continue
-                    else:
-                        # Non-submittal subsection found, stop extracting
-                        logger.debug(f"Stopping at non-submittal subsection in {section_num}: {line}")
-                        break
+                # Now handle the new subsection
+                if is_submittal_subsection:
+                    # This is a submittal subsection - start extracting
+                    in_submittal_subsection = True
+                    logger.debug(f"Entering submittal subsection in {section_num}: {line}")
+
+                    # Add the subsection heading as Level 2
+                    row = {
+                        'Section Number': '',
+                        'Section Name': '',
+                    }
+                    for i in range(1, 11):
+                        row[f'Level {i}'] = ''
+                    row['Level 2'] = line
+                    rows.append(row)
+                    continue
                 else:
-                    # Not currently in a submittal subsection
-                    if is_submittal_subsection:
-                        # First submittal subsection found
-                        in_submittal_subsection = True
-                        logger.debug(f"Entering submittal subsection in {section_num}: {line}")
-
-                        # Add the subsection heading as Level 2
-                        row = {
-                            'Section Number': '',
-                            'Section Name': '',
-                        }
-                        for i in range(1, 11):
-                            row[f'Level {i}'] = ''
-                        row['Level 2'] = line
-                        rows.append(row)
-                        continue
+                    # Non-submittal subsection - skip it but keep scanning
+                    in_submittal_subsection = False
+                    logger.debug(f"Skipping non-submittal subsection in {section_num}: {line}")
+                    continue
 
             # Collect lines if we're inside a submittal subsection
             if in_submittal_subsection:
                 subsection_lines.append(line)
 
-        # FIXED: Merge continuation lines for the subsection content
+        # Process last submittal subsection if any
         if subsection_lines:
+            logger.debug(f"Processing last submittal subsection in {section_num}")
             merged_items = self._merge_continuation_lines(subsection_lines)
 
             # Create rows from merged items
@@ -852,8 +894,7 @@ class SubmittalExtractor:
         # Combine: submittal sections first, then others
         sorted_sections = submittal_sections + other_sections
 
-        logger.info(
-            f"Sheet order: {len(submittal_sections)} SUBMITTAL sections first, then {len(other_sections)} others")
+        logger.info(f"Sheet order: {len(submittal_sections)} SUBMITTAL sections first, then {len(other_sections)} others")
 
         # Create sheets in sorted order
         first_sheet_created = False
@@ -870,8 +911,8 @@ class SubmittalExtractor:
 
             # Headers
             headers = ['Section Number', 'Section Name',
-                       'Level 1', 'Level 2', 'Level 3', 'Level 4', 'Level 5',
-                       'Level 6', 'Level 7', 'Level 8', 'Level 9', 'Level 10']
+                      'Level 1', 'Level 2', 'Level 3', 'Level 4', 'Level 5',
+                      'Level 6', 'Level 7', 'Level 8', 'Level 9', 'Level 10']
 
             for col_idx, header in enumerate(headers, 1):
                 cell = ws.cell(1, col_idx, header)
@@ -922,7 +963,7 @@ class SubmittalExtractor:
             ws = wb.active
             ws.title = 'Submittal Resp'
             headers = ['Section', '', '', '', 'Description', '', 'Type', 'Sub/Vendor',
-                       'Due', "Recv'd", 'Float', 'Submit', 'HIDE', 'Return', 'Status']
+                      'Due', "Recv'd", 'Float', 'Submit', 'HIDE', 'Return', 'Status']
             for col_idx, header in enumerate(headers, 1):
                 ws.cell(6, col_idx, header)
             logger.info("No template found, creating basic structure")
@@ -947,7 +988,6 @@ if __name__ == "__main__":
         print(f"Testing extractor on: {pdf_file}")
 
         import time
-
         start = time.time()
 
         extractor = SubmittalExtractor(pdf_file)
