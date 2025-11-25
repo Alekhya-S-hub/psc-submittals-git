@@ -106,11 +106,32 @@ async def extract_submittals(file: UploadFile = File(...)):
         logger.info(f"Starting extraction for file: {file.filename}")
 
         # Save uploaded file to temporary location
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', mode='wb') as temp_file:
             temp_file_path = temp_file.name
             content = await file.read()
+
+            # Log file info for debugging
+            logger.info(f"Received file: {file.filename}, size: {len(content)} bytes")
+            logger.info(f"First 4 bytes: {content[:4]}")  # Should be b'%PDF'
+
             temp_file.write(content)
+            temp_file.flush()  # Ensure data is written to disk
             logger.info(f"File saved to temporary location: {temp_file_path}")
+
+        try:
+            with open(temp_file_path, 'rb') as f:
+                header = f.read(4)
+                if header != b'%PDF':
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Invalid PDF file - corrupted or not a PDF"
+                    )
+        except Exception as e:
+            logger.error(f"PDF validation failed: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"PDF validation failed: {str(e)}"
+            )
 
         # Look for template
         template_path = Path(__file__).parent / "templates" / "SubmittalLog.xlsx"
