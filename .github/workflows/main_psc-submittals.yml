@@ -2,7 +2,7 @@
 # More GitHub Actions for Azure: https://github.com/Azure/actions
 # More info on Python, GitHub Actions, and Azure App Service: https://aka.ms/python-webapps-actions
 
-name: Build and deploy Python app to Azure Web App - petticoat-submittal
+name: Build and deploy Python app to Azure Web App - psc-submittals
 
 on:
   push:
@@ -63,14 +63,14 @@ jobs:
       - name: Login to Azure
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_54126F60FA2448A7B0C015198A5950D2 }}
-          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_723079AA373F40D080D0BA776B00E1EF }}
-          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_5B2435EC46E24B6A98A417DFD6D29927 }}
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_4E4CAABB211040A781F6A288A2CAFAF8 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_7114135F79AD47E985EC0214FF9E28C0 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_096D36F6C1174CF2AA2AACAAF3F2B7DB }}
 
       - name: 'Deploy to Azure Web App'
         uses: azure/webapps-deploy@v3
         id: deploy-to-webapp
         with:
-          app-name: 'petticoat-submittal'
+          app-name: 'psc-submittals'
           slot-name: 'Production'
           
