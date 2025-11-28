@@ -2,7 +2,7 @@
 Submittal Extraction API
 FastAPI application for extracting submittals from construction spec books
 """
-
+from fastapi import Request
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -295,80 +295,106 @@ async def extract_submittals_json(file: UploadFile = File(...)):
                 logger.warning(f"Failed to delete temporary file: {str(e)}")
 
 
-@app.post("/extract-submittals-from-path")
-async def extract_submittals_from_path(file_path: str):
+
+@app.post("/extract-submittals-base64")
+async def extract_submittals_base64(request: Request):
     """
-    Extract submittals from a file already stored (e.g., OneDrive path)
-    Alternative endpoint for when n8n provides file path instead of upload
-
-    Args:
-        file_path: Path to PDF file
-
-    Returns:
-        JSON response with extraction results
+    Base64 endpoint with raw request parsing - for debugging
     """
     start_time = time.time()
+    temp_file_path = None
 
     try:
-        # Validate file exists
-        if not os.path.exists(file_path):
-            raise HTTPException(
-                status_code=404,
-                detail=f"File not found: {file_path}"
-            )
+        # Parse JSON manually
+        body = await request.json()
 
-        if not file_path.lower().endswith('.pdf'):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid file type. Only PDF files are supported."
-            )
+        filename = body.get("filename")
+        file_content = body.get("file_content")
 
-        logger.info(f"Starting extraction for file path: {file_path}")
+        logger.info(f"Received filename: {filename}")
+        logger.info(f"Received file_content length: {len(file_content) if file_content else 0}")
 
-        # Initialize extractor and process PDF
-        extractor = SubmittalExtractor(file_path)
-        result = extractor.extract()
+        if not file_content:
+            raise HTTPException(400, "file_content is required")
 
-        # Calculate extraction time
+        if not filename:
+            filename = "document.pdf"
+
+        if not filename.lower().endswith('.pdf'):
+            raise HTTPException(400, "Invalid file type")
+
+        # Decode base64
+        import base64
+        file_bytes = base64.b64decode(file_content)
+        logger.info(f"Decoded file size: {len(file_bytes)} bytes")
+
+        # Validate PDF header
+        if file_bytes[:4] != b'%PDF':
+            raise HTTPException(400, f"Invalid PDF - first bytes: {file_bytes[:4]}")
+
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', mode='wb') as temp_file:
+            temp_file_path = temp_file.name
+            temp_file.write(file_bytes)
+            temp_file.flush()
+            logger.info(f"File saved to: {temp_file_path}")
+
+        # Look for template
+        template_path = Path(__file__).parent / "templates" / "SubmittalLog.xlsx"
+        if not template_path.exists():
+            template_path = Path("templates/SubmittalLog.xlsx")
+            if not template_path.exists():
+                template_path = None
+
+        # Extract
+        extractor = SubmittalExtractor(temp_file_path)
+        result = extractor.extract(template_path=str(template_path) if template_path else None)
+
         extraction_time = time.time() - start_time
+        sections_wb = result["sections"]
+        log_wb = result["log"]
 
-        # Get filename from path
-        filename = Path(file_path).name
+        logger.info(f"Extraction completed: {len(sections_wb.sheetnames)} sheets, {extraction_time:.2f}s")
 
-        logger.info(
-            f"Extraction completed successfully: "
-            f"{len(result['sections'])} sections, "
-            f"{len(result['log'])} submittals"
+        # Create ZIP
+        sections_excel = BytesIO()
+        log_excel = BytesIO()
+
+        sections_wb.save(sections_excel)
+        log_wb.save(log_excel)
+
+        sections_excel.seek(0)
+        log_excel.seek(0)
+
+        zip_buffer = BytesIO()
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            zip_file.writestr('submittal_sections.xlsx', sections_excel.getvalue())
+            zip_file.writestr('submittals_log.xlsx', log_excel.getvalue())
+
+        zip_buffer.seek(0)
+
+        pdf_name = Path(filename).stem
+        zip_filename = f"{pdf_name}_extracted_submittals.zip"
+
+        logger.info(f"Returning ZIP: {zip_filename}")
+
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={zip_filename}"}
         )
-
-        # Prepare response
-        response = {
-            "success": True,
-            "sections": result["sections"],
-            "log": result["log"],
-            "metadata": {
-                "filename": filename,
-                "file_path": file_path,
-                "total_sections": len(result["sections"]),
-                "total_submittals": len(result["log"]),
-                "extraction_time": round(extraction_time, 2),
-                "timestamp": time.time()
-            }
-        }
-
-        return JSONResponse(content=response)
 
     except HTTPException:
         raise
-
     except Exception as e:
-        logger.error(f"Error during extraction: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Extraction failed: {str(e)}"
-        )
-
-
+        logger.error(f"Error: {str(e)}", exc_info=True)
+        raise HTTPException(500, f"Extraction failed: {str(e)}")
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except Exception as e:
+                logger.warning(f"Cleanup failed: {str(e)}")
 @app.get("/test")
 async def test_endpoint():
     """
