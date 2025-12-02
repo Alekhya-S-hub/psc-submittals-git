@@ -2,22 +2,32 @@
 Submittal Extraction API
 FastAPI application for extracting submittals from construction spec books
 """
+import shutil
+
 from fastapi import Request
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Dict, List, Optional
 import logging
-import time
-import tempfile
-import os
+import time, datetime
 from pathlib import Path
-import pandas as pd
 from io import BytesIO
 import zipfile
+from fastapi.responses import JSONResponse
+import base64, tempfile
+
+import os
+from dotenv import load_dotenv
+import json
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from openai import OpenAI
+import fitz  # PyMuPDF
+from datetime import datetime
 
 from extractor import SubmittalExtractor
 
+load_dotenv()
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -43,6 +53,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+OUTPUT_DIR = "./output"
+TEMPLATES_DIR = "./templates"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 @app.get("/")
 async def root():
@@ -214,87 +227,6 @@ async def extract_submittals(file: UploadFile = File(...)):
                 logger.warning(f"Failed to delete temporary file: {str(e)}")
 
 
-@app.post("/extract-submittals-json")
-async def extract_submittals_json(file: UploadFile = File(...)):
-    """
-    Extract submittal requirements and return JSON
-    (For n8n or programmatic integration)
-
-    Args:
-        file: PDF file upload (multipart/form-data)
-
-    Returns:
-        JSON response with sections and log data
-    """
-    start_time = time.time()
-    temp_file_path = None
-
-    try:
-        # Validate file type
-        if not file.filename.lower().endswith('.pdf'):
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid file type. Only PDF files are supported."
-            )
-
-        logger.info(f"Starting extraction for file: {file.filename}")
-
-        # Save uploaded file to temporary location
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-            temp_file_path = temp_file.name
-            content = await file.read()
-            temp_file.write(content)
-            logger.info(f"File saved to temporary location: {temp_file_path}")
-
-        # Initialize extractor and process PDF
-        extractor = SubmittalExtractor(temp_file_path)
-        result = extractor.extract()
-
-        # Calculate extraction time
-        extraction_time = time.time() - start_time
-
-        logger.info(
-            f"Extraction completed successfully: "
-            f"{len(result['sections'])} sections, "
-            f"{len(result['log'])} submittals"
-        )
-
-        # Prepare response
-        response = {
-            "success": True,
-            "sections": result["sections"],
-            "log": result["log"],
-            "metadata": {
-                "filename": file.filename,
-                "total_sections": len(result["sections"]),
-                "total_submittals": len(result["log"]),
-                "extraction_time": round(extraction_time, 2),
-                "timestamp": time.time()
-            }
-        }
-
-        return JSONResponse(content=response)
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        logger.error(f"Error during extraction: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=500,
-            detail=f"Extraction failed: {str(e)}"
-        )
-
-    finally:
-        # Clean up temporary file
-        if temp_file_path and os.path.exists(temp_file_path):
-            try:
-                os.unlink(temp_file_path)
-                logger.info(f"Temporary file deleted: {temp_file_path}")
-            except Exception as e:
-                logger.warning(f"Failed to delete temporary file: {str(e)}")
-
-
 
 @app.post("/extract-submittals-base64")
 async def extract_submittals_base64(request: Request):
@@ -395,6 +327,433 @@ async def extract_submittals_base64(request: Request):
                 os.unlink(temp_file_path)
             except Exception as e:
                 logger.warning(f"Cleanup failed: {str(e)}")
+
+
+logger = logging.getLogger(__name__)
+
+
+# ===== PYDANTIC MODELS (copy to app.py before endpoints) =====
+
+class ProjectInfoRequest(BaseModel):
+    filename: str
+    file_content: str
+
+
+class SubmittalStructureRequest(BaseModel):
+    filename: str
+    file_content: str
+    project_info: dict
+
+
+# ===== API ENDPOINT 1: EXTRACT PROJECT INFO =====
+
+@app.post("/extract-project-info")
+async def extract_project_info(request: ProjectInfoRequest):
+    """Extract project information from first 10 pages of PDF using OpenAI"""
+    temp_file_path = None
+
+    try:
+        logger.info(f"Extracting project info from: {request.filename}")
+
+        # Get OpenAI API key
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            raise HTTPException(500, "OPENAI_API_KEY not configured")
+
+        # Decode base64
+        file_bytes = base64.b64decode(request.file_content)
+        logger.info(f"Decoded file size: {len(file_bytes)} bytes")
+
+        if file_bytes[:4] != b'%PDF':
+            raise HTTPException(400, "Invalid PDF file")
+
+        # Save to temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', mode='wb') as temp_file:
+            temp_file_path = temp_file.name
+            temp_file.write(file_bytes)
+            temp_file.flush()
+
+        # Extract text from first 10 pages
+        doc = fitz.open(temp_file_path)
+        total_pages = len(doc)
+        pages_to_extract = min(10, total_pages)
+
+        pdf_text = ""
+        for page_num in range(pages_to_extract):
+            try:
+                page = doc[page_num]
+                text = page.get_text("text", sort=True)
+                pdf_text += f"\n--- Page {page_num + 1} ---\n{text}"
+            except Exception as e:
+                logger.warning(f"Error extracting page {page_num + 1}: {e}")
+
+        doc.close()
+        pdf_text = pdf_text[:12000]
+
+        # Prepare OpenAI prompt
+        prompt = f"""Extract the following project info from the given PDF text:
+- Project Name
+- CCUA Project #
+- CDM Smith Project #
+- PSCC Job #
+- Engineer Name and Address
+- Contractor Name and Address
+- Prepared By
+
+Return ONLY strict JSON with keys: project_name, ccua_project_number, cdm_project_number, pscc_job_number, engineer_name, engineer_address, contractor_name, contractor_address, prepared_by
+
+If a field is not found, use an empty string "".
+
+PDF Text (first 10 pages):
+\"\"\"
+{pdf_text}
+\"\"\"
+"""
+
+        # Call OpenAI
+        client = OpenAI(api_key=openai_api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system",
+                 "content": "You are a helpful assistant that extracts project information from construction PDFs. Always return valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0,
+            max_tokens=500
+        )
+
+        # Parse response
+        openai_response = response.choices[0].message.content.strip()
+        if openai_response.startswith("```json"):
+            openai_response = openai_response.replace("```json", "").replace("```", "").strip()
+        elif openai_response.startswith("```"):
+            openai_response = openai_response.replace("```", "").strip()
+
+        try:
+            project_info = json.loads(openai_response)
+        except json.JSONDecodeError as e:
+            project_info = {"error": "Failed to parse response", "raw_response": openai_response}
+
+        return {
+            "success": True,
+            "filename": request.filename,
+            "pages_analyzed": pages_to_extract,
+            "project_info": project_info
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {str(e)}", exc_info=True)
+        raise HTTPException(500, f"Extraction failed: {str(e)}")
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
+
+
+def replace_placeholder_in_paragraph(para, replacements):
+    """
+    Replace placeholders in a paragraph that may be split across runs
+
+    Args:
+        para: docx paragraph object
+        replacements: dict of {placeholder: value}
+    """
+    # Get full paragraph text
+    full_text = para.text
+
+    # Check if any placeholder exists in full text
+    needs_replacement = False
+    for placeholder in replacements.keys():
+        if placeholder in full_text:
+            needs_replacement = True
+            break
+
+    if not needs_replacement:
+        return False
+
+    # Replace all placeholders in full text
+    new_text = full_text
+    for placeholder, value in replacements.items():
+        if placeholder in new_text:
+            new_text = new_text.replace(placeholder, str(value or ""))
+
+    # Clear all runs and create a single new run with replaced text
+    # Preserve formatting from first run
+    if para.runs:
+        first_run = para.runs[0]
+        # Clear all runs
+        for run in para.runs:
+            run.text = ""
+        # Set new text in first run
+        first_run.text = new_text
+    else:
+        # No runs, add new one
+        para.add_run(new_text)
+
+    return True
+
+
+@app.post("/create-submittal-structure")
+async def create_submittal_structure_working(request: SubmittalStructureRequest):
+    """
+    Create folder structure with all placeholders correctly replaced
+    Handles split placeholders and adds submittal name to Excel
+    """
+    temp_file_path = None
+    temp_dir = None
+
+    try:
+        logger.info(f"Creating submittal structure: {request.filename}")
+
+        # Decode and validate base64
+        import base64
+        file_bytes = base64.b64decode(request.file_content)
+        if file_bytes[:4] != b'%PDF':
+            raise HTTPException(400, "Invalid PDF file")
+
+        # Save PDF
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf', mode='wb') as temp_file:
+            temp_file_path = temp_file.name
+            temp_file.write(file_bytes)
+            temp_file.flush()
+
+        # Use extractor to find sections with submittals
+        from extractor import SubmittalExtractor
+        import fitz
+
+        extractor = SubmittalExtractor(temp_file_path)
+        extractor.doc = fitz.open(temp_file_path)
+        total_pages = len(extractor.doc)
+
+        logger.info(f"PDF has {total_pages} pages")
+
+        # Extract FULL PDF text
+        logger.info("Extracting full PDF text...")
+        extractor.full_text = ""
+        for page_num in range(total_pages):
+            try:
+                page = extractor.doc[page_num]
+                text = page.get_text("text", sort=True)
+                extractor.full_text += text + "\n"
+            except:
+                try:
+                    text = page.get_text("text", sort=False)
+                    extractor.full_text += text + "\n"
+                except:
+                    pass
+
+        # Parse TOC
+        extractor._compile_patterns()
+        extractor.toc = extractor._extract_toc_from_first_100_pages()
+
+        if len(extractor.toc) == 0:
+            extractor.toc = extractor._scan_pdf_for_sections()
+
+        logger.info(f"Found {len(extractor.toc)} sections in TOC")
+
+        # Process sections to find those with submittals
+        extractor.sections_with_submittals = []
+        for section_num_display, section_num_search, section_name in extractor.toc:
+            extractor._process_section(section_num_display, section_num_search, section_name)
+
+        extractor.doc.close()
+
+        logger.info(f"Found {len(extractor.sections_with_submittals)} sections with submittals")
+
+        if len(extractor.sections_with_submittals) == 0:
+            raise HTTPException(400, "No sections with submittal subsections found")
+
+        # Create temp directory
+        temp_dir = tempfile.mkdtemp()
+        base_path = Path(temp_dir)
+
+        # Load templates
+        word_template = Path(__file__).parent / "templates" / "Coverpage_New.docx"
+        excel_template = Path(__file__).parent / "templates" / "Transmittal.xlsx"
+
+        if not word_template.exists():
+            raise HTTPException(500, "Coverpage_New.docx not found")
+        if not excel_template.exists():
+            raise HTTPException(500, "Transmittal.xlsx not found")
+
+        # Create folders for each section with submittals
+        created_count = 0
+
+        for section_num, section_name in extractor.sections_with_submittals:
+            try:
+                # Clean folder name
+                folder_name = f"{section_num} {section_name}"
+                folder_name = "".join(c for c in folder_name if c.isalnum() or c in (' ', '-', '_', '.'))
+                if len(folder_name) > 200:
+                    folder_name = folder_name[:200]
+
+                section_path = base_path / folder_name
+                section_path.mkdir(parents=True, exist_ok=True)
+
+                # Create subfolder structure
+                vendor = section_path / "1. From Vendor"
+                to_eng = section_path / "2. To Engineer"
+                frm_eng = section_path / "3. From Engineer"
+                final = section_path / "4. Final Approved"
+
+                for folder in [vendor, to_eng, frm_eng, final]:
+                    folder.mkdir(parents=True, exist_ok=True)
+
+                # Create Rev folders
+                for rev in ["Rev 0", "Rev 1", "Rev 2"]:
+                    (to_eng / rev).mkdir(parents=True, exist_ok=True)
+
+                # Fill Word document
+                from docx import Document
+                doc = Document(word_template)
+
+                # Prepare replacements
+                today_date = datetime.now().strftime("%m/%d/%Y")
+
+                ccua_no = (request.project_info.get("ccua_project_number") or
+                           request.project_info.get("project_number") or "")
+
+                replacements = {
+                    "{{PROJECT_NAME}}": request.project_info.get("project_name", ""),
+                    "{{CCUA_PROJECT_NO}}": ccua_no,
+                    "{{PSCC_JOB_NO}}": request.project_info.get("pscc_job_number", ""),
+                    "{{ENGINEER_NAME}}": request.project_info.get("engineer_name", ""),
+                    "{{ENGINEER_ADDRESS}}": request.project_info.get("engineer_address", ""),
+                    "{{CONTRACTOR_NAME}}": request.project_info.get("contractor_name", ""),
+                    "{{CONTRACTOR_ADDRESS}}": request.project_info.get("contractor_address", ""),
+                    "{{PREPARED_BY}}": request.project_info.get("prepared_by", ""),
+                    "{{SECTION_NUMBER}}": section_num,
+                    "{{SUBMITTAL_TITLE}}": section_name,
+                    "{{DATE}}": today_date,
+                }
+
+                logger.debug(f"Processing section {section_num}: {section_name}")
+
+                # Replace in all paragraphs
+                for para in doc.paragraphs:
+                    replace_placeholder_in_paragraph(para, replacements)
+
+                # Replace in all tables
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            for para in cell.paragraphs:
+                                replace_placeholder_in_paragraph(para, replacements)
+
+                # Replace in headers
+                for section in doc.sections:
+                    for para in section.header.paragraphs:
+                        replace_placeholder_in_paragraph(para, replacements)
+
+                # Replace in footers
+                for section in doc.sections:
+                    for para in section.footer.paragraphs:
+                        replace_placeholder_in_paragraph(para, replacements)
+
+                doc.save(to_eng / "Submittal.docx")
+                logger.info(f"Saved Word doc for {section_num}")
+
+                # Fill Excel document
+                import openpyxl
+                wb = openpyxl.load_workbook(excel_template)
+                ws = wb.active
+
+                # ADD SUBMITTAL NAME IN FIRST ROW
+                # Insert a new row at the top
+                ws.insert_rows(1)
+                # Add submittal name
+                ws['A1'] = f"Submittal for Section {section_num} - {section_name}"
+                # Make it bold
+                ws['A1'].font = openpyxl.styles.Font(bold=True, size=12)
+
+                excel_replacements = {
+                    "{{ENGINEER_NAME}}": request.project_info.get("engineer_name", ""),
+                    "{{ENGINEER_ADDRESS}}": request.project_info.get("engineer_address", ""),
+                    "{{DATE}}": today_date,
+                    "{{PSCC_JOB_NO}}": request.project_info.get("pscc_job_number", ""),
+                    "{{PROJECT_NAME}}": request.project_info.get("project_name", ""),
+                    "{{CCUA_PROJECT_NO}}": ccua_no,
+                    "{{SECTION_NUMBER}}": section_num,
+                    "{{SUBMITTAL_TITLE}}": section_name
+                }
+
+                # Replace placeholders in all cells
+                for row in ws.iter_rows():
+                    for cell in row:
+                        if cell.value and isinstance(cell.value, str):
+                            for placeholder, value in excel_replacements.items():
+                                if placeholder in cell.value:
+                                    cell.value = cell.value.replace(placeholder, str(value or ""))
+
+                wb.save(to_eng / "Transmittal.xlsx")
+                logger.info(f"Saved Excel for {section_num}")
+
+                created_count += 1
+
+            except Exception as e:
+                logger.error(f"Failed for {section_num}: {e}", exc_info=True)
+                continue
+
+        logger.info(f"Created {created_count} section folders")
+
+        if created_count == 0:
+            raise HTTPException(500, "Failed to create any folders")
+
+        # Create ZIP file
+        logger.info("Creating ZIP file...")
+        zip_buffer = BytesIO()
+
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            for root, dirs, files in os.walk(temp_dir):
+                for file in files:
+                    file_path = Path(root) / file
+                    arcname = file_path.relative_to(temp_dir)
+                    zip_file.write(file_path, arcname)
+
+                for dir_name in dirs:
+                    dir_path = Path(root) / dir_name
+                    arcname = str(dir_path.relative_to(temp_dir)) + '/'
+                    zip_info = zipfile.ZipInfo(arcname)
+                    zip_info.external_attr = 0o040755 << 16
+                    zip_file.writestr(zip_info, '')
+
+        zip_buffer.seek(0)
+
+        pdf_name = Path(request.filename).stem
+        zip_filename = f"{pdf_name}_submittal_structure.zip"
+
+        logger.info(f"ZIP ready: {zip_filename} ({created_count} sections)")
+
+        return StreamingResponse(
+            zip_buffer,
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={zip_filename}"}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error: {str(e)}", exc_info=True)
+        raise HTTPException(500, f"Failed: {str(e)}")
+    finally:
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.unlink(temp_file_path)
+            except:
+                pass
+        if temp_dir and os.path.exists(temp_dir):
+            try:
+                import shutil
+                shutil.rmtree(temp_dir)
+            except:
+                pass
+
+
 @app.get("/test")
 async def test_endpoint():
     """
@@ -436,6 +795,7 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Submittal Extraction API shutting down...")
+
 
 
 if __name__ == "__main__":
