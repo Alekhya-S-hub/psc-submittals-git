@@ -39,3 +39,4 @@ pytz>=2023.3
 # black>=23.12.0
 # flake8>=6.1.0
 openai
+python-docx
