@@ -437,6 +437,26 @@ def replace_placeholder_in_paragraph(para, replacements):
 
     return True
 
+
+def replace_in_table(table, replacements):
+    """
+    Recursively replace placeholders in a table, including nested tables
+
+    Args:
+        table: docx table object
+        replacements: dict of {placeholder: value}
+    """
+    for row in table.rows:
+        for cell in row.cells:
+            # Replace in paragraphs
+            for para in cell.paragraphs:
+                replace_placeholder_in_paragraph(para, replacements)
+
+            # Recursively process nested tables
+            for nested_table in cell.tables:
+                replace_in_table(nested_table, replacements)
+
+
 # ===== API ENDPOINT 4: SUBMITTAL FOLDERS =====
 @app.post("/create-submittal-structure")
 async def create_submittal_structure_working(request: SubmittalStructureRequest):
@@ -578,12 +598,9 @@ async def create_submittal_structure_working(request: SubmittalStructureRequest)
                 for para in doc.paragraphs:
                     replace_placeholder_in_paragraph(para, replacements)
 
-                # Replace in all tables
+                # Replace in all tables (including nested tables)
                 for table in doc.tables:
-                    for row in table.rows:
-                        for cell in row.cells:
-                            for para in cell.paragraphs:
-                                replace_placeholder_in_paragraph(para, replacements)
+                    replace_in_table(table, replacements)
 
                 # Replace in headers
                 for section in doc.sections:
@@ -595,7 +612,7 @@ async def create_submittal_structure_working(request: SubmittalStructureRequest)
                     for para in section.footer.paragraphs:
                         replace_placeholder_in_paragraph(para, replacements)
 
-                doc.save(to_eng / "Submittal.docx")
+                doc.save(to_eng / "Submittal_CoverPage.docx")
                 logger.info(f"Saved Word doc for {section_num}")
 
                 # Fill Excel document
