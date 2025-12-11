@@ -331,16 +331,23 @@ async def extract_project_info(request: ProjectInfoRequest):
         pdf_text = pdf_text[:12000]
 
         # Prepare OpenAI prompt
-        prompt = f"""Extract the following project info from the given PDF text:
-- Project Name
-- CCUA Project #
-- CDM Smith Project #
-- PSCC Job #
-- Engineer Name and Address
-- Contractor Name and Address
-- Prepared By
+        prompt = f"""Extract the following project info (even if wording varies or formatting is inconsistent):
 
-Return ONLY strict JSON with keys: project_name, ccua_project_number, cdm_project_number, pscc_job_number, engineer_name, engineer_address, contractor_name, contractor_address, prepared_by
+- Project Name (also appears as "Project Title", "Project", or on title page)
+- Project Number (also called "Project No.", "Contract No.", "CCUA Project Number", "Project ID")
+- PSCC Job Number (also appears as "PSCC Project Number", "Job No.", "Job Number")
+- Engineer Name and Address (may appear as a firm name, contact block, or footer stamp)
+- Contractor Name and Address (may appear on signature page or contract information sheet)
+- Owner Name and Address (may appear as "Owner", "Client", "Utility Authority", etc.)
+- Prepared By (may be an engineer, consultant, or preparation firm listed on cover/title page)
+
+IMPORTANT:
+- If a value appears multiple times, use the most complete version.
+- If a field is partially available (e.g., name but not address), populate what is available and leave the missing part empty.
+- If a field is truly not present, return an empty string "" for that key.
+- Never omit any key.
+
+Return ONLY strict JSON with keys: project_name, ccua_project_number, pscc_job_number, engineer_name, engineer_address, contractor_name, contractor_address, owner_name, owner_address, prepared_by
 
 If a field is not found, use an empty string "".
 
@@ -586,6 +593,8 @@ async def create_submittal_structure_working(request: SubmittalStructureRequest)
                     "{{ENGINEER_ADDRESS}}": request.project_info.get("engineer_address", ""),
                     "{{CONTRACTOR_NAME}}": request.project_info.get("contractor_name", ""),
                     "{{CONTRACTOR_ADDRESS}}": request.project_info.get("contractor_address", ""),
+                    "{{OWNER_NAME}}": request.project_info.get("owner_name", ""),
+                    "{{OWNER_ADDRESS}}": request.project_info.get("owner_address", ""),
                     "{{PREPARED_BY}}": request.project_info.get("prepared_by", ""),
                     "{{SECTION_NUMBER}}": section_num,
                     "{{SUBMITTAL_TITLE}}": section_name,
@@ -631,6 +640,8 @@ async def create_submittal_structure_working(request: SubmittalStructureRequest)
                 excel_replacements = {
                     "{{ENGINEER_NAME}}": request.project_info.get("engineer_name", ""),
                     "{{ENGINEER_ADDRESS}}": request.project_info.get("engineer_address", ""),
+                    "{{OWNER_NAME}}": request.project_info.get("owner_name", ""),
+                    "{{OWNER_ADDRESS}}": request.project_info.get("owner_address", ""),
                     "{{DATE}}": today_date,
                     "{{PSCC_JOB_NO}}": request.project_info.get("pscc_job_number", ""),
                     "{{PROJECT_NAME}}": request.project_info.get("project_name", ""),
