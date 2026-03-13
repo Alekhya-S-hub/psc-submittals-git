@@ -174,7 +174,7 @@ For each specification document, the system generates:
 ### Setup
 
 ```bash
-git clone https://github.com/<your-username>/submittals-agent.git
+git clone https://github.com/Alekhya-S-hub/psc-submittals-git.git
 cd submittals-agent
 
 pip install -r requirements.txt
