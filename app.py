@@ -585,6 +585,10 @@ async def create_submittal_structure_working(request: SubmittalStructureRequest)
                 ccua_no = (request.project_info.get("ccua_project_number") or
                            request.project_info.get("project_number") or "")
 
+                # Build submittal number: D-<spec number>-001-A
+                spec_num_clean = section_num.replace(" ", "")
+                submittal_number = f"D-{spec_num_clean}-001-A"
+
                 replacements = {
                     "{{PROJECT_NAME}}": request.project_info.get("project_name", ""),
                     "{{CCUA_PROJECT_NO}}": ccua_no,
@@ -598,6 +602,7 @@ async def create_submittal_structure_working(request: SubmittalStructureRequest)
                     "{{PREPARED_BY}}": request.project_info.get("prepared_by", ""),
                     "{{SECTION_NUMBER}}": section_num,
                     "{{SUBMITTAL_TITLE}}": section_name,
+                    "{{SUBMITTAL_NUMBER}}": submittal_number,
                     "{{DATE}}": today_date,
                 }
 
