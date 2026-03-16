@@ -248,17 +248,6 @@ Place the following templates in the `templates/` directory:
 
 Supported placeholders: `{{PROJECT_NAME}}`, `{{CCUA_PROJECT_NO}}`, `{{PSCC_JOB_NO}}`, `{{ENGINEER_NAME}}`, `{{ENGINEER_ADDRESS}}`, `{{CONTRACTOR_NAME}}`, `{{CONTRACTOR_ADDRESS}}`, `{{OWNER_NAME}}`, `{{OWNER_ADDRESS}}`, `{{PREPARED_BY}}`, `{{SECTION_NUMBER}}`, `{{SUBMITTAL_TITLE}}`, `{{SUBMITTAL_NUMBER}}`, `{{DATE}}`
 
----
-
-## Limitations
-
-- Assumes specifications follow CSI MasterFormat conventions. Non-standard section numbering may reduce recall.
-- Scanned (image-only) PDFs require OCR (`use_ocr=True`), which is slower and less accurate.
-- The LLM component (project metadata) requires an OpenAI API key and network access.
-- Evaluated on specifications from a single geographic region (North America) and a limited set of contractors.
-- Footer filtering includes hardcoded patterns for specific firms — these should be generalized for broader use.
-
----
 
 ## License
 
